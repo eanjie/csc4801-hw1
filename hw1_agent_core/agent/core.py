@@ -73,8 +73,7 @@ class Agent:
         Return that message. This step only builds the message; it must
         not modify self.messages.
         """
-        # TODO: implement
-        raise NotImplementedError
+        return {"role": "user", "content": [{"type": "text", "text": user_prompt}]}
 
     def initialize(self, user_prompt: str) -> None:
         """
@@ -83,8 +82,7 @@ class Agent:
         the one produced by receive_prompt -- and nothing left over from any
         earlier run() on the same Agent instance.
         """
-        # TODO: implement
-        raise NotImplementedError
+        self.messages = [self.receive_prompt(user_prompt)]
 
     # ------------------------------------------------------------------
     # Part 2: Main Loop
@@ -120,8 +118,38 @@ class Agent:
         inside it, must be left untouched -- the stored transcript always
         keeps the full tool output.
         """
-        # TODO: implement
-        raise NotImplementedError
+        tool_result_locations: list[tuple[int, int]] = []
+        for msg_idx, message in enumerate(self.messages):
+            for block_idx, block in enumerate(message["content"]):
+                if isinstance(block, ToolResultBlock):
+                    tool_result_locations.append((msg_idx, block_idx))
+
+        clear_count = max(0, len(tool_result_locations) - self.keep_recent_tool_results)
+        locations_to_clear = set(tool_result_locations[:clear_count])
+
+        view: list[dict[str, Any]] = []
+        for msg_idx, message in enumerate(self.messages):
+            new_content: list[Any] = []
+            message_changed = False
+            for block_idx, block in enumerate(message["content"]):
+                if (msg_idx, block_idx) in locations_to_clear:
+                    new_content.append(
+                        ToolResultBlock(
+                            tool_use_id=block.tool_use_id,
+                            content=CLEARED_TOOL_RESULT,
+                            is_error=block.is_error,
+                        )
+                    )
+                    message_changed = True
+                else:
+                    new_content.append(block)
+
+            if message_changed:
+                view.append({"role": message["role"], "content": new_content})
+            else:
+                view.append(message)
+
+        return view
 
     def call_llm(self) -> LLMResponse:
         """
@@ -138,8 +166,12 @@ class Agent:
 
         Must not modify self.messages.
         """
-        # TODO: implement
-        raise NotImplementedError
+        tool_schemas = [to_anthropic_schema(tool) for tool in self.tools.values()]
+        return self.llm_client.create_message(
+            system=self.system_prompt,
+            messages=self.prepare_context(),
+            tools=tool_schemas,
+        )
 
     def process_response(self, response: LLMResponse) -> tuple[list[TextBlock], list[ToolUseBlock]]:
         """
@@ -154,8 +186,14 @@ class Agent:
 
         Return (text_blocks, tool_use_blocks).
         """
-        # TODO: implement
-        raise NotImplementedError
+        text_blocks: list[TextBlock] = []
+        tool_use_blocks: list[ToolUseBlock] = []
+        for block in response.content:
+            if isinstance(block, TextBlock):
+                text_blocks.append(block)
+            elif isinstance(block, ToolUseBlock):
+                tool_use_blocks.append(block)
+        return text_blocks, tool_use_blocks
 
     def call_tools(self, tool_use_blocks: list[ToolUseBlock]) -> list[ToolResultBlock]:
         """
@@ -180,8 +218,40 @@ class Agent:
 
         Return the ToolResultBlocks in the same order as the input blocks.
         """
-        # TODO: implement
-        raise NotImplementedError
+        results: list[ToolResultBlock] = []
+        for block in tool_use_blocks:
+            try:
+                tool = self.tools[block.name]
+            except KeyError:
+                results.append(
+                    ToolResultBlock(
+                        tool_use_id=block.id,
+                        content=f"Unknown tool: {block.name!r}",
+                        is_error=True,
+                    )
+                )
+                continue
+
+            try:
+                content = tool.execute(**block.input)
+            except Exception as exc:
+                results.append(
+                    ToolResultBlock(
+                        tool_use_id=block.id,
+                        content=str(exc),
+                        is_error=True,
+                    )
+                )
+            else:
+                results.append(
+                    ToolResultBlock(
+                        tool_use_id=block.id,
+                        content=content,
+                        is_error=False,
+                    )
+                )
+
+        return results
 
     def append_assistant_turn(self, response: LLMResponse) -> None:
         """
@@ -192,8 +262,7 @@ class Agent:
         ids stored here are what the following tool results are matched
         against.
         """
-        # TODO: implement
-        raise NotImplementedError
+        self.messages.append({"role": "assistant", "content": response.content})
 
     def append_tool_results(self, tool_results: list[ToolResultBlock]) -> None:
         """
@@ -204,8 +273,8 @@ class Agent:
         Do not append anything when tool_results is empty -- an empty
         message is not a valid turn.
         """
-        # TODO: implement
-        raise NotImplementedError
+        if tool_results:
+            self.messages.append({"role": "user", "content": tool_results})
 
     def check_loop(self, response: LLMResponse, iteration: int) -> bool:
         """
@@ -220,8 +289,7 @@ class Agent:
         provided in case you want it for logging; the iteration budget
         itself is enforced by run(), not here.
         """
-        # TODO: implement
-        raise NotImplementedError
+        return response.stop_reason == "tool_use"
 
     # ------------------------------------------------------------------
     # Part 3: Output
@@ -232,8 +300,7 @@ class Agent:
         of the final turn: the `.text` of every block, in order, separated
         by a single newline. Return "" when there are no text blocks.
         """
-        # TODO: implement
-        raise NotImplementedError
+        return "\n".join(block.text for block in text_blocks)
 
     # ------------------------------------------------------------------
     # Orchestration -- the loop itself.
@@ -262,5 +329,17 @@ class Agent:
           - If self.max_iterations iterations complete without the model
             finishing, raise MaxIterationsExceeded.
         """
-        # TODO: implement
-        raise NotImplementedError
+        self.initialize(user_prompt)
+
+        for iteration in range(self.max_iterations):
+            response = self.call_llm()
+            text_blocks, tool_use_blocks = self.process_response(response)
+            self.append_assistant_turn(response)
+
+            if not self.check_loop(response, iteration):
+                return self.extract_final_answer(text_blocks)
+
+            tool_results = self.call_tools(tool_use_blocks)
+            self.append_tool_results(tool_results)
+
+        raise MaxIterationsExceeded

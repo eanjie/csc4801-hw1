@@ -98,4 +98,4 @@ class WordCountTool:
     )
 
     def execute(self, text: str) -> str:
-        raise NotImplementedError("TODO: implement WordCountTool.execute")
+        return str(len(text.split()))

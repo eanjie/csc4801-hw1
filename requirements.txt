@@ -1,2 +1,0 @@
-pytest>=8.0
-anthropic>=0.40.0  # optional: only needed if you run agent/llm_client.py's make_anthropic_llm_client for your own demo
